@@ -206,7 +206,7 @@ func (p *EvrPipeline) processRemoteLogSets(ctx context.Context, logger *zap.Logg
 				ghostTime = fiveSecondsAgo
 			}
 
-			ghostTime = ghostTime.Add(10 * time.Second)
+			ghostTime = ghostTime.Add(1 * time.Second)
 
 			if now.After(ghostTime) {
 				params.ghostTracker.Store(ghostTime)
