@@ -171,7 +171,102 @@ func (p *EvrPipeline) processRemoteLogSets(ctx context.Context, logger *zap.Logg
 			update.FromGoal(msg)
 
 		case *evr.RemoteLogGhostUser:
-			// This is a ghost user message.
+			params, ok := LoadParams(session.Context())
+			if !ok {
+				logger.Error("Failed to load params")
+				continue
+			}
+
+			userID, err := GetUserIDByEvrID(ctx, p.db, request.EvrID.String())
+			if err != nil {
+				logger.Error("Failed to get user ID by evr ID", zap.Error(err))
+				continue
+			}
+
+			g, ok := params.guildGroups[msg.SocialGroupID]
+			if !ok || !g.IsModerator(userID) {
+				continue
+			}
+
+			targetUserID, err := GetUserIDByEvrID(ctx, p.db, msg.OtherPlayerUserid)
+			if err != nil {
+				logger.Error("Failed to get user ID by evr ID", zap.Error(err))
+				continue
+			}
+
+			now := time.Now()
+			fiveSecondsAgo := now.Add(-5 * time.Second)
+			ghostTime := fiveSecondsAgo
+
+			if params.ghostTracker != nil {
+				ghostTime = params.ghostTracker.Load()
+			}
+
+			if ghostTime.Before(fiveSecondsAgo) {
+				ghostTime = fiveSecondsAgo
+			}
+
+			ghostTime = ghostTime.Add(10 * time.Second)
+
+			if now.After(ghostTime) {
+				params.ghostTracker.Store(ghostTime)
+				continue
+			}
+
+			params.ghostTracker.Store(fiveSecondsAgo)
+
+			metadata, err := GetGuildGroupMetadata(ctx, p.db, msg.SocialGroupID)
+			if err != nil {
+				return errors.New("failed to get guild group metadata")
+			}
+
+			metadata.CommunityValuesUserIDsAdd(targetUserID, 0)
+
+			data, err := metadata.MarshalToMap()
+			if err != nil {
+				return fmt.Errorf("error marshalling group data: %w", err)
+			}
+			if err := p.runtime.nk.GroupUpdate(ctx, msg.SocialGroupID, SystemUserID, "", "", "", "", "", false, data, 1000000); err != nil {
+				return fmt.Errorf("error updating group: %w", err)
+			}
+
+			presences, err := p.runtime.nk.StreamUserList(StreamModeService, targetUserID, "", StreamLabelMatchService, false, true)
+			if err != nil {
+				return err
+			}
+
+			cnt := 0
+			for _, ply := range presences {
+				disconnectDelay := 0
+				if ply.GetUserId() == targetUserID {
+					cnt += 1
+					if label, _ := MatchLabelByID(ctx, p.runtime.nk, MatchIDFromStringOrNil(ply.GetStatus())); label != nil {
+
+						if label.Broadcaster.SessionID.String() == ply.GetSessionId() {
+							continue
+						}
+
+						if label.GetGroupID().String() != msg.SocialGroupID {
+							return errors.New("user's match is not from this guild")
+						}
+
+						if err := KickPlayerFromMatch(ctx, p.runtime.nk, label.ID, targetUserID); err != nil {
+							return err
+						}
+						disconnectDelay = 15
+					}
+
+					go func() {
+						<-time.After(time.Second * time.Duration(disconnectDelay))
+						// Just disconnect the user, wholesale
+						if _, err := DisconnectUserID(ctx, p.runtime.nk, targetUserID, false); err != nil {
+							logger.Warn("Failed to disconnect user", zap.Error(err))
+						}
+					}()
+
+					cnt++
+				}
+			}
 
 		case *evr.RemoteLogVOIPLoudness:
 
