@@ -51,6 +51,8 @@ type SessionParameters struct {
 	isEarlyQuitter       *atomic.Bool                       // The user is an early quitter
 	isGoldNameTag        *atomic.Bool                       // If this user should have a gold name tag
 	lastMatchmakingError *atomic.Error                      // The last matchmaking error
+
+	ghostTracker *atomic.Time // Tracks remote log ghosts to
 }
 
 func (s *SessionParameters) MetricsTags() map[string]string {
